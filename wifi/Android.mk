@@ -35,7 +35,13 @@ ifdef WIFI_DRIVER_STATE_OFF
 LOCAL_CFLAGS += -DWIFI_DRIVER_STATE_OFF=\"$(WIFI_DRIVER_STATE_OFF)\"
 endif
 
-LOCAL_SRC_FILES += wifi/wifi.c
+ifeq ($(BOARD_WLAN_DEVICE),UNITE)
+  LOCAL_C_INCLUDES += $(LOCAL_PATH)/../../external/wpa_supplicant_ath/wpa_supplicant/src/common
+  LOCAL_SRC_FILES += wifi/wifi_unite.c
+else
+  LOCAL_SRC_FILES += wifi/wifi.c
+  LOCAL_C_INCLUDES += $(LOCAL_PATH)/../../external/wpa_supplicant_8/src/common
+endif
 
 ifdef WPA_SUPPLICANT_VERSION
 LOCAL_CFLAGS += -DLIBWPA_CLIENT_EXISTS
