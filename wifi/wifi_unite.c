@@ -1,6 +1,6 @@
 /*
  * Copyright 2008, The Android Open Source Project
- * Copyright (C) 2014 Freescale Semiconductor, Inc.
+ * Copyright (C) 2015 Freescale Semiconductor, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@
 #include <unistd.h>
 #include <ctype.h>
 #include <poll.h>
+#include <sys/stat.h>
 
 #include "hardware_legacy/wifi.h"
 #include "libwpa_client/wpa_ctrl.h"
@@ -42,12 +43,17 @@
 enum Vendor {
     UNKNOWN = -1,
     ATHEROS = 0x1,
-    REALTEK = 0x2
+    REALTEK = 0x2,
+    BCM     = 0x3
 };
 enum RealtekDeviceModel {
     UNKNOWN_MODEL = -1,
     RTL8723AS = 0x0,
     RTL8821AS = 0x1
+};
+
+enum BroadcomDeviceModel {
+    BCM4335_4339 = 0x0
 };
 enum AthoresDeviceModel {
     ATHEROS_DEFAULT  = 0
@@ -104,6 +110,11 @@ static char primary_iface[PROPERTY_VALUE_MAX];
 #define WIFI_DRIVER_LOADER_DELAY                1000000
 
 
+#define WIFI_DRIVER_MODULE_PATH_BCM              "/system/lib/modules/bcmdhd.ko"
+#define WIFI_DRIVER_MODULE_NAME_BCM              "bcmdhd"
+#define WIFI_DRIVER_MODULE_ARG_BCM               ""
+#define WIFI_SDIO_IF_DRIVER_MODULE_PATH_BCM  "/system/lib/modules/cfg80211_realtek.ko"
+
 #define WIFI_DRIVER_MODULE_PATH_ATHEROS          "/system/lib/modules/ath6kl_sdio.ko"
 #define WIFI_DRIVER_MODULE_NAME_ATHEROS          "ath6kl_sdio"
 #define WIFI_DRIVER_MODULE_ARG_ATHEROS           "suspend_mode=3 wow_mode=2 ar6k_clock=26000000 ath6kl_p2p=1"
@@ -122,6 +133,11 @@ static char primary_iface[PROPERTY_VALUE_MAX];
 #define WIFI_DRIVER_MODULE_ARG_REALTEK_RTL8723AS           "ifname=wlan0 if2name=p2p0"
 #define WIFI_DRIVER_MODULE_ARG_REALTEK_RTL8821AS           "ifname=wlan0 if2name=p2p0 rtw_vht_enable=2"
 #define WIFI_SDIO_IF_DRIVER_MODULE_PATH_REALTEK  "/system/lib/modules/cfg80211_realtek.ko"
+
+static const char DRIVER_MODULE_NAME_BCM[]          = WIFI_DRIVER_MODULE_NAME_BCM;
+static const char DRIVER_MODULE_TAG_BCM[]           = WIFI_DRIVER_MODULE_NAME_BCM " ";
+static const char DRIVER_MODULE_PATH_BCM[]          = WIFI_DRIVER_MODULE_PATH_BCM;
+static const char DRIVER_MODULE_ARG_BCM[]           = WIFI_DRIVER_MODULE_ARG_BCM;
 
 static const char DRIVER_MODULE_NAME_ATHEROS[]      = WIFI_DRIVER_MODULE_NAME_ATHEROS;
 static const char DRIVER_MODULE_TAG_ATHEROS[]       = WIFI_DRIVER_MODULE_NAME_ATHEROS " ";
@@ -143,11 +159,15 @@ static const char* DRIVER_MODULE_ARG_REALTEK[]       = {WIFI_DRIVER_MODULE_ARG_R
                                                        WIFI_DRIVER_MODULE_ARG_REALTEK_RTL8821AS};
 static const char DRIVER_SDIO_IF_MODULE_PATH_REALTEK[]  = WIFI_SDIO_IF_DRIVER_MODULE_PATH_REALTEK;
 
+static const char DRIVER_SDIO_IF_MODULE_PATH_BCM[]  = WIFI_SDIO_IF_DRIVER_MODULE_PATH_BCM;
+
 static const char DRIVER_SDIO_IF_MODULE_NAME[]  = WIFI_SDIO_IF_DRIVER_MODULE_NAME;
 static const char DRIVER_SDIO_IF_MODULE_ARG[]   = WIFI_SDIO_IF_DRIVER_MODULE_ARG;
 
 static const char IFACE_DIR[]           = "/data/system/wpa_supplicant";
 
+static const char BCM_SUPP_PROP_NAME[]      = "init.svc.wpa_supplicant";
+static const char BCM_SUPPLICANT_NAME[]     = "wpa_supplicant";
 static const char FIRMWARE_LOADER[]     = WIFI_FIRMWARE_LOADER;
 static const char DRIVER_PROP_NAME[]    = "wlan.driver.status";
 static const char DRIVER_VENDOR_NAME[]  = "wlan.vendor";
@@ -215,8 +235,11 @@ int get_wifi_vendor_info(int* model)
         }
     }
     if (f == NULL)
-        return -1;
-    if (fgets(linebuf, sizeof(linebuf) -1, f))
+    {
+        ALOGD("Nothing detected but we consider to detect the BCM card");
+        property_set(DRIVER_VENDOR_NAME, "broadcom");
+        vendor = BCM;
+    } else if (fgets(linebuf, sizeof(linebuf) -1, f))
     {
         ALOGD("read vendor info: %s", linebuf);
         value = strtol(linebuf, NULL, 16);
@@ -232,14 +255,14 @@ int get_wifi_vendor_info(int* model)
             fclose(f);
             return ATHEROS;
         }
-        else
-        {
-            fclose(f);
-            *model = UNKNOWN_MODEL;
-            return UNKNOWN;
+        else {
+            ALOGD(" Nothing detected but we consider to detect the BCM card");
+            property_set(DRIVER_VENDOR_NAME, "broadcom");
+            vendor = BCM;
         }
     }
-    fclose(f);
+    if (f)
+        fclose(f);
     f = NULL;
     f = fopen(sdio_device_path[i], "r");
     if (f)
@@ -248,25 +271,31 @@ int get_wifi_vendor_info(int* model)
         {
             ALOGD("read device info:%s",linebuf);
             value = strtol(linebuf, NULL, 16);
-            if (value == 0x8723)
-            {
-                ALOGD("realtek RTL8723AS detected!");
-                *model = RTL8723AS;
-            }
-            else if (value == 0x8821)
-            {
-                ALOGD("realtek RTL8821AS detected!");
-                *model = RTL8821AS;
-            }
-            else
-            {
-                ALOGE("realtek unkown device: %s ", linebuf);
-                *model = UNKNOWN_MODEL;
+            if (vendor == REALTEK) {
+                 if (value == 0x8723)
+                 {
+                     ALOGD("realtek RTL8723AS detected!");
+                     *model = RTL8723AS;
+                 }
+                 else if (value == 0x8821)
+                 {
+                     ALOGD("realtek RTL8821AS detected!");
+                     *model = RTL8821AS;
+                 }
+                 else
+                 {
+                     ALOGE("realtek unkown device: %s ", linebuf);
+                     *model = UNKNOWN_MODEL;
+                 }
+            } else if (vendor == BCM) {
+                    ALOGD("bcm 4335/4339 detected!");
+                    *model = BCM4335_4339;
             }
         }
-    } else
-    {
-        ALOGE("error: Unable to read device file %s ", sdio_device_path[i]);
+        fclose(f);
+    } else {
+        ALOGD("Nothing detected but we consider to detect the BCM4339 card");
+        *model = BCM4335_4339;
     }
     return vendor;
 }
@@ -471,6 +500,8 @@ int is_wifi_driver_loaded() {
         return check_wifi_driver_loaded_strict(DRIVER_MODULE_TAG_ATHEROS);
     } else if (WifiVendor == REALTEK) {
         return check_wifi_driver_loaded_strict(DRIVER_MODULE_TAG_REALTEK[WifiModel]);
+    } else if (WifiVendor == BCM) {
+        return check_wifi_driver_loaded_strict(DRIVER_MODULE_NAME_BCM);
     } else
         return 0;//Unkown driver
 }
@@ -489,11 +520,19 @@ int wifi_insmod_driver_realtek()
     }
     return 0;
 }
+int wifi_insmod_driver_bcm()
+{
+    if (insmod(DRIVER_SDIO_IF_MODULE_PATH_BCM, DRIVER_SDIO_IF_MODULE_ARG) < 0)
+        return -1;
+
+    if (insmod(DRIVER_MODULE_PATH_BCM, DRIVER_MODULE_ARG_BCM) < 0)
+        return -1;
+    return 0;
+}
 int wifi_insmod_driver_atheros()
 {
     if (insmod(DRIVER_COMPAT_MODULE_PATH, DRIVER_COMPAT_MODULE_ARG) < 0)
         return -1;
-
     if (insmod(DRIVER_SDIO_IF_MODULE_PATH_ATHEROS, DRIVER_SDIO_IF_MODULE_ARG) < 0)
         return -1;
 
@@ -506,9 +545,14 @@ int wifi_load_driver()
     char driver_status[PROPERTY_VALUE_MAX];
     int count = 100; /* wait at most 20 seconds for completion */
     int ret;
-
+#ifdef SABRESD_7D
+    /* Sabresd_7d use BCM4339 by force */
+    WifiVendor = BCM;
+    WifiModel = BCM4335_4339;
+    property_set(DRIVER_VENDOR_NAME, "broadcom");
+#else
     WifiVendor = get_wifi_vendor_info(&WifiModel);
-
+#endif
     if (is_wifi_driver_loaded()) {
         return 0;
     }
@@ -520,6 +564,12 @@ int wifi_load_driver()
         if (WifiModel == UNKNOWN_MODEL)
             return -1;
         ret =  wifi_insmod_driver_realtek();
+    } else if (WifiVendor == BCM) {
+        ALOGD("load driver bcm");
+        if (WifiModel == BCM4335_4339)
+            ret = wifi_insmod_driver_bcm();
+        else
+            ret = -1;
     } else
         return -1;
     if (ret < 0)
@@ -589,7 +639,9 @@ int wifi_unload_driver()
         return __wifi_unload_driver(DRIVER_MODULE_NAME_REALTEK[WifiModel], false);
     else if (WifiVendor == ATHEROS)
         return __wifi_unload_driver(DRIVER_MODULE_NAME_ATHEROS, true);
-    else
+    else if (WifiVendor == BCM) {
+        return __wifi_unload_driver(DRIVER_MODULE_NAME_BCM, false);
+    }
         return -1;
 }
 
@@ -808,6 +860,10 @@ int wifi_start_supplicant(int p2p_supported)
         } else if (WifiVendor == REALTEK) {
             strcpy(supplicant_name, P2P_SUPPLICANT_NAME_REALTEK[WifiModel]);
             strcpy(supplicant_prop_name, P2P_PROP_NAME_REALTEK[WifiModel]);
+        } else if (WifiVendor == BCM)
+        {
+            strcpy(supplicant_name, BCM_SUPPLICANT_NAME);
+            strcpy(supplicant_prop_name, BCM_SUPP_PROP_NAME);
         }
 
         /* Ensure p2p config file is created */
@@ -860,13 +916,15 @@ int wifi_start_supplicant(int p2p_supported)
     ALOGD("start supplicant cmd=%s iface=%s",supplicant_name,primary_iface);
     /* Check the interface exist*/
     if (p2p_supported) {
-        int count = 10; /* wait at most 1 seconds for completion */
-        while (wifi_ifname(SECONDARY) == NULL && count-- > 0) {
-            usleep(100000);
-        }
-        if (wifi_ifname(SECONDARY) == NULL) {
-            ALOGE("%s get wifi_ifname(SECONDARY) fail", __func__);
-            return -1;
+        if (WifiVendor != BCM) {
+            int count = 10; /* wait at most 1 seconds for completion */
+            while (wifi_ifname(SECONDARY) == NULL && count-- > 0) {
+                usleep(100000);
+            }
+            if (wifi_ifname(SECONDARY) == NULL) {
+                ALOGE("%s get wifi_ifname(SECONDARY) fail", __func__);
+                return -1;
+            }
         }
     }
     if(wifi_ifname(PRIMARY) == NULL) {
@@ -916,6 +974,11 @@ int wifi_stop_supplicant(int p2p_supported)
         {
             strcpy(supplicant_name, P2P_SUPPLICANT_NAME_REALTEK[WifiModel]);
             strcpy(supplicant_prop_name, P2P_PROP_NAME_REALTEK[WifiModel]);
+        }
+        else if( WifiVendor == BCM)
+        {
+            strcpy(supplicant_name, BCM_SUPPLICANT_NAME);
+            strcpy(supplicant_prop_name, BCM_SUPP_PROP_NAME);
         }
     } else {
         strcpy(supplicant_name, SUPPLICANT_NAME);
@@ -1185,10 +1248,13 @@ int wifi_change_fw_path(const char *fwpath)
     int len;
     int fd;
     int ret = 0;
-
-    return ret;
+    char vendor_name[255];
+    property_get(DRIVER_VENDOR_NAME, vendor_name, "");
+    if (strcmp(vendor_name, "broadcom"))
+	return ret;
     if (!fwpath)
         return ret;
+    ALOGD("Set wifi firmware path:%s", fwpath);
     fd = TEMP_FAILURE_RETRY(open(WIFI_DRIVER_FW_PATH_PARAM, O_WRONLY));
     if (fd < 0) {
         ALOGE("Failed to open wlan fw path param (%s)", strerror(errno));
@@ -1199,6 +1265,7 @@ int wifi_change_fw_path(const char *fwpath)
         ALOGE("Failed to write wlan fw path param (%s)", strerror(errno));
         ret = -1;
     }
+
     close(fd);
     return ret;
 }

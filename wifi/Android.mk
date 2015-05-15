@@ -37,6 +37,9 @@ endif
 
 ifeq ($(BOARD_WLAN_DEVICE),UNITE)
   LOCAL_C_INCLUDES += $(LOCAL_PATH)/../../external/wpa_supplicant_ath/wpa_supplicant/src/common
+ifeq ($(TARGET_PRODUCT),sabresd_7d)
+  LOCAL_CFLAGS += -DSABRESD_7D
+endif
   LOCAL_SRC_FILES += wifi/wifi_unite.c
 else
   LOCAL_SRC_FILES += wifi/wifi.c
