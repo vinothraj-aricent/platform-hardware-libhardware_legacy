@@ -1,6 +1,6 @@
 /*
  * Copyright 2008, The Android Open Source Project
- * Copyright (C) 2015 Freescale Semiconductor, Inc.
+ * Copyright (C) 2015-2016 Freescale Semiconductor, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -738,6 +738,7 @@ int update_ctrl_interface(const char *config_file) {
     pbuf = malloc(sb.st_size + PROPERTY_VALUE_MAX);
     if (!pbuf)
         return 0;
+    memset(pbuf, 0, sb.st_size + PROPERTY_VALUE_MAX);
     srcfd = TEMP_FAILURE_RETRY(open(config_file, O_RDONLY));
     if (srcfd < 0) {
         ALOGE("Cannot open \"%s\": %s", config_file, strerror(errno));
@@ -756,9 +757,15 @@ int update_ctrl_interface(const char *config_file) {
         property_get("wifi.interface", ifc, WIFI_TEST_INTERFACE);
         if (wifi_ifname(PRIMARY) == NULL) {
             ALOGE("%s: get wifi_ifname(PRIMARY) fail\n", __func__);
+            free(pbuf);
             return -1;
         }
-        strcpy(ifc, wifi_ifname(PRIMARY));
+	if (strlen(wifi_ifname(PRIMARY)) < PROPERTY_VALUE_MAX)
+	    strcpy(ifc, wifi_ifname(PRIMARY));
+	else {
+	    ALOGE("too long wifi_ifname.");
+            return -1;
+	}
     } else {
         strcpy(ifc, CONTROL_IFACE_PATH);
     }
